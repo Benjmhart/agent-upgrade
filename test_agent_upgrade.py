@@ -102,7 +102,7 @@ finally:
 print("ok")
 # agent view (claude agents, 2.1.330): never typed into
 bx = lambda *b: "\n".join([RULE, *b, RULE2, STATUS])
-AV = "\n".join(["❯ Needs input", "  ✻ personal-comms 🐺   press Start", RULE2, "❯ describe a task for a new session\r", RULE2,
+AV = "\n".join(["❯ Needs input", "  ✻ billing-api   press Start", RULE2, "❯ describe a task for a new session\r", RULE2,
                 "  enter to collapse · ctrl+x to remove all · ? for shortcuts"])
 assert au.agent_view(AV) and not au.agent_view(bx("❯ \r"))
 au.screen = lambda pane, ansi=False: AV
