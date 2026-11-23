@@ -47,7 +47,8 @@ Setup writes the unit with the stable `current` path, so plugin updates take eff
 Anything else works too: cron, another multiplexer's hook, or by hand. Run `python3 $S once` every few minutes. Passes
 are safe to overlap, because only one runs at a time (flock).
 
-Options, from the environment at setup time:
+Options, from the environment at setup time (setup saves them in `~/.config/agent-upgrade/env`, which every run
+reads, so herdr's startup entry gets them too; the environment wins):
 - `AGENT_UPGRADE_STATE`: the state folder.
 - `AGENT_UPGRADE_TELL`: the folder of an agent to tell after a pass that restarted something, for an agent that keeps
   other agents' loops.

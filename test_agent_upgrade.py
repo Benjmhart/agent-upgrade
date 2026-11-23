@@ -1,5 +1,5 @@
 # python3 test_agent_upgrade.py: the logic without herdr (memory, lost, resume commands, flag cleaning)
-import os, sys, tempfile
+import os, subprocess, sys, tempfile
 os.environ["HERDR_PLUGIN_STATE_DIR"] = tempfile.mkdtemp()
 import agent_upgrade as au
 
@@ -136,7 +136,17 @@ try:
     svc = next(v for k, v in f.items() if k.endswith(".service"))
     assert "ExecStart=" in svc and svc.rstrip().endswith(" once") and "Environment=PATH=" in svc
     assert "OnCalendar=*:0/10" in next(v for k, v in f.items() if k.endswith(".timer"))
-    plist = next(iter(au.setup("launchd", write=False).values()))
+    plist = next(v for k, v in au.setup("launchd", write=False).items() if k.endswith(".plist"))
+    _saved = {k: os.environ.pop(k) for k in au.SETTINGS if k in os.environ}
+    os.environ["AGENT_UPGRADE_TELL"] = "/x/orchestrator"   # herdr's startup entry gets its settings from the saved file
+    assert au.setup("herdr", write=False) == {au.CONF: "AGENT_UPGRADE_TELL=/x/orchestrator\n"}
+    del os.environ["AGENT_UPGRADE_TELL"]; os.environ.update(_saved)
+    _env = dict(os.environ, XDG_CONFIG_HOME=au.CR_STATE); _env.pop("AGENT_UPGRADE_STATE", None)
+    os.makedirs(os.path.join(au.CR_STATE, "agent-upgrade"))
+    open(os.path.join(au.CR_STATE, "agent-upgrade", "env"), "w").write("AGENT_UPGRADE_STATE=/x/st\nPATH=/evil\n")
+    out = subprocess.run([sys.executable, "-c", "import agent_upgrade as a, os; print(a.CR_STATE, os.environ['PATH'] != '/evil')"],
+                         env=_env, capture_output=True, text=True, cwd=os.path.dirname(os.path.abspath(au.__file__))).stdout
+    assert out.split() == ["/x/st", "True"], out
     assert "<integer>600</integer>" in plist and "<string>once</string>" in plist
     try:
         au.setup("cron", write=False); assert False

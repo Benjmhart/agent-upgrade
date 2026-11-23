@@ -14,11 +14,23 @@ Remote Control off (/restart refuses under it), runs /restart, turns Remote Cont
   agent_upgrade.py remember           record herdr's running agents (herdr runs it on agent events)
 
 Environment: AGENT_UPGRADE_STATE (state folder, default ~/.local/state/agent-upgrade), AGENT_UPGRADE_TELL (the folder
-of an agent to tell after a pass that restarted anything, so it can bring back loops of its own).
+of an agent to tell after a pass that restarted anything, so it can bring back loops of its own). `setup` saves them in
+~/.config/agent-upgrade/env, which every run reads (the environment wins).
 Standard library only. The upgrade pass reads /proc: Linux.
 """
 import glob, json, os, re, shlex, shutil, socket, subprocess, sys, time
 from datetime import datetime
+
+# Settings saved by `setup`, for schedulers that start this with an environment of their own (herdr's startup entry
+# runs with the herdr server's). The environment wins over the file.
+SETTINGS = ("AGENT_UPGRADE_STATE", "AGENT_UPGRADE_TELL", "HERDR_SOCKET_PATH")
+CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "agent-upgrade", "env")
+try:
+    for k, _, v in (l.partition("=") for l in open(CONF).read().splitlines()):
+        if k in SETTINGS and v:
+            os.environ.setdefault(k, v)
+except OSError:
+    pass
 
 PLUGIN = "benjmhart.agent-upgrade"
 WIN = os.name == "nt"
@@ -1028,9 +1040,8 @@ def setup(kind, write=True):
     """Run a pass every 10 minutes: herdr's startup entry, a systemd user timer, or a launchd agent. Returns
     {path: content} of what it wrote."""
     me, env = script_path(), {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
-    env.update({k: os.environ[k] for k in ("AGENT_UPGRADE_STATE", "AGENT_UPGRADE_TELL", "HERDR_SOCKET_PATH")
-                if os.environ.get(k)})
-    files, cmds = {}, []
+    env.update({k: os.environ[k] for k in SETTINGS if os.environ.get(k)})
+    files, cmds = {CONF: "".join(f"{k}={v}\n" for k, v in env.items() if k != "PATH")}, []
     if kind == "herdr":   # herdr-plugin.toml's startup entry runs `loop` while the server runs
         cmds = [[HERDR, "plugin", "link", os.path.dirname(me)]]
     elif kind == "systemd":
