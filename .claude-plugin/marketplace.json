@@ -1,0 +1,11 @@
+{
+  "name": "agent-upgrade",
+  "owner": { "name": "Benjmhart" },
+  "plugins": [
+    {
+      "name": "agent-upgrade",
+      "source": "./",
+      "description": "Restart running Claude Code sessions onto the installed version, gracefully."
+    }
+  ]
+}

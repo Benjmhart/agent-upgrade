@@ -1,0 +1,35 @@
+id = "benjmhart.agent-upgrade"
+name = "Agent upgrade"
+version = "0.1.0"
+min_herdr_version = "0.9.3"
+description = "Restart agent sessions onto the installed version gracefully (a pass every 10 min), and list lost agents: panes whose agent exited and was not resumed"
+platforms = ["linux", "macos", "windows"]
+
+# Remember which agent each terminal runs (herdr forgets an agent the moment it exits).
+[[events]]
+on = "pane.agent_detected"
+command = ["python3", "agent_upgrade.py", "remember"]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["python3", "agent_upgrade.py", "remember"]
+
+[[startup]]
+command = ["python3", "agent_upgrade.py", "remember"]
+
+# Claude Code upgrades: a pass every 10 minutes while the server runs (agent_upgrade.py setup herdr).
+[[startup]]
+command = ["python3", "agent_upgrade.py", "loop"]
+
+[[actions]]
+id = "lost"
+title = "Lost agents"
+command = ["python3", "agent_upgrade.py", "open"]
+
+[[panes]]
+id = "ui"
+title = "Lost agents"
+placement = "popup"
+width = "90%"
+height = "60%"
+command = ["python3", "agent_upgrade.py", "ui"]
