@@ -244,7 +244,11 @@ NBSP = " "
 
 
 def echo(*a):
-    print(*a, flush=True)
+    line = " ".join(str(x) for x in a)
+    w = line.split(" ", 2)
+    if len(w) > 1:   # the last word on each pane, for the round report
+        U.setdefault("last", {})[w[1].rstrip(":")] = line
+    print(line, flush=True)
 
 
 def h(*args, timeout=15):
@@ -1205,11 +1209,14 @@ def upgrade(dry):
             os.remove(fp)
     have = bool(shutil.which(HERDR) or shutil.which("tmux"))
     done = busy = failed = 0
+    outcome = {}   # pane -> "upgraded" | "waiting"
     if stale and have:
         for pane, ver in stale.items():
             s = status(pane)
+            outcome[pane] = "waiting"
             if s not in ("idle", "done", "working"):
                 busy += 1
+                U.setdefault("last", {})[pane] = f"{pane} is {s or 'in an unknown state'} (a question for you, or no hooks)"
                 continue
             if dry:
                 p = session_pid(pane)
@@ -1220,9 +1227,12 @@ def upgrade(dry):
             r = rc_restart(pane)
             if r == 0:
                 echo(f"{'resumed in its pane' if pane in BG else 'restarted'} {pane} (was {ver})")
+                outcome[pane] = "upgraded"
                 done += 1
             elif r == 1:
                 failed += 1
+    if not dry and have:
+        round_report(stale, outcome)
     if done and not dry:
         open(os.path.join(CR_STATE, "loops-due"), "w").write(
             f"The Claude upgrade pass at {time.strftime('%H:%M')} restarted {done} session(s) onto "
@@ -1236,6 +1246,63 @@ def upgrade(dry):
     echo(f"claude {os.path.basename(U['cur'])}: {done} {'to restart' if dry else 'restarted'}, "
          f"{busy} busy (next pass), {failed} failed, {daemon} of them background sessions, {outside} outside herdr and tmux")
     return 1 if failed else 0
+
+def round_report(stale, outcome):
+    """Each upgrade round (one installed version) ends with one report: every session that was outdated, upgraded or
+    not and why. It is sent when none is left waiting, or once the wait limit has passed (those left are flagged then):
+    no session stays on an old version without the user hearing of it (Ben, 2026-11-23)."""
+    ver = os.path.basename(U["cur"])
+    f = os.path.join(CR_STATE, f"round-{ver}.json")
+    try:
+        r = json.load(open(f))
+    except (OSError, ValueError):
+        r = {"started": time.time(), "sessions": {}, "reported": False}
+    if r["reported"]:
+        return
+    ss = r["sessions"]
+    for pane, old in stale.items():
+        e = ss.setdefault(pane, {"from": old, "name": ws_name(pane)})
+        e["state"] = outcome.get(pane, "waiting")
+        e["why"] = "" if e["state"] == "upgraded" else U.get("last", {}).get(pane, "")
+    for pane, e in ss.items():   # gone from the stale list since: upgraded (by hand, or another pass) or closed
+        if pane not in stale and e["state"] == "waiting":
+            e["state"], e["why"] = ("upgraded", "") if pane_exists(pane) else ("closed", "")
+    waiting = [p for p, e in ss.items() if e["state"] == "waiting"]
+    late = time.time() - r["started"] > MAX_WAIT
+    if ss and (not waiting or late):
+        for p in waiting:
+            flag(p)
+            ss[p]["state"] = "flagged"
+        up = sum(e["state"] == "upgraded" for e in ss.values())
+        lines = [f"Claude {ver}: {up} of {len(ss)} sessions upgraded"] + [
+            f"  {e['name'] or p}: {e['from']} -> {ver}" if e["state"] == "upgraded" else
+            f"  {e['name'] or p}: still {e['from']} ({e['state']}): {e['why'] or 'no reason recorded'}"
+            for p, e in sorted(ss.items())]
+        os.makedirs(os.path.join(CR_STATE, "rounds"), exist_ok=True)
+        open(os.path.join(CR_STATE, "rounds", f"{ver}.txt"), "w").write("\n".join(lines) + "\n")
+        for l in lines:
+            echo("report " + l.strip())
+        if shutil.which(HERDR):
+            h("notification", "show", f"agent-upgrade: Claude {ver}", "--body",
+              lines[0] + ("" if up == len(ss) else "; flagged: " + ", ".join(e["name"] or p for p, e in ss.items()
+                                                                          if e["state"] != "upgraded")),
+              "--sound", "done" if up == len(ss) else "request")
+        r["reported"] = True
+    json.dump(r, open(f, "w"))
+
+
+def ws_name(pane):
+    """The pane's workspace name (herdr), or ""."""
+    if tmux(pane):
+        return ""
+    ok, out = h("pane", "get", pane)
+    try:
+        ws = json.loads(out)["result"]["pane"].get("workspace_id")
+        ok, out = h("workspace", "get", ws)
+        return json.loads(out)["result"]["workspace"].get("label") or ""
+    except (ValueError, KeyError, TypeError):
+        return ""
+
 
 UNIT = "agent-upgrade"
 LABEL = "io.github.benjmhart.agent-upgrade"

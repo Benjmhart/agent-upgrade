@@ -20,6 +20,9 @@ blindly loses work. agent-upgrade restarts them gracefully:
 - Nothing is ever killed or forced. A busy or looping session is asked to save its work and stop what it started
   as gracefully as it can. If it says `RESTART-READY` and still has shells running, or `/restart` is refused for
   background work, it is told what is left and asked to close it gracefully.
+- Each upgrade round ends with one report: every session that was outdated, upgraded or not and why. It is written
+  to `<state>/rounds/<version>.txt`, logged, and shown as a herdr notification. It is sent when none is left waiting,
+  or when the wait limit has passed; the sessions still waiting are flagged then.
 - A session that hasn't said `RESTART-READY` within the wait limit (default 60 min) is reported once and flagged
   for you (herdr-queues' 🔖 revisit flag, when that plugin is installed). It keeps running on its old version.
 

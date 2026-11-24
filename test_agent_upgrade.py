@@ -227,4 +227,26 @@ try:
     assert au.fg_cmd("none", "s-2") == "claude --resume s-2"
 finally:
     au.CLAUDE = _c
+# round report: sent once, when nothing is left waiting or past the wait limit (the rest flagged then)
+_st, _f, _h, _ws, _pe, _cur, _mw = au.CR_STATE, au.flag, au.h, au.ws_name, au.pane_exists, au.U["cur"], au.MAX_WAIT
+try:
+    au.CR_STATE = tempfile.mkdtemp(); au.U["cur"] = "/v/2.1.331"
+    flagged, sent = [], []
+    au.flag = flagged.append
+    au.h = lambda *a, **k: (sent.append(a), (True, "{}"))[1]
+    au.ws_name = lambda pane: {"%1": "castiron", "%2": "tax-prep"}[pane]
+    au.pane_exists = lambda pane: True
+    au.U["last"] = {"%1": "skip %1: asked to wind down; waiting for its RESTART-READY"}
+    au.round_report({"%1": "2.1.330", "%2": "2.1.330"}, {"%1": "waiting", "%2": "upgraded"})
+    assert not sent                                                  # %1 still waiting, within the limit
+    au.MAX_WAIT = -1
+    au.round_report({"%1": "2.1.330"}, {"%1": "waiting"})
+    rep = open(os.path.join(au.CR_STATE, "rounds", "2.1.331.txt")).read()
+    assert flagged == ["%1"] and len(sent) == 1, (flagged, sent)
+    assert "1 of 2 sessions upgraded" in rep and "tax-prep: 2.1.330 -> 2.1.331" in rep, rep
+    assert "castiron: still 2.1.330 (flagged): skip %1: asked to wind down" in rep, rep
+    au.round_report({"%1": "2.1.330"}, {"%1": "waiting"})
+    assert len(sent) == 1                                            # one report per round
+finally:
+    au.CR_STATE, au.flag, au.h, au.ws_name, au.pane_exists, au.U["cur"], au.MAX_WAIT = _st, _f, _h, _ws, _pe, _cur, _mw
 print("ok")
