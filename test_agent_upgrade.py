@@ -229,6 +229,8 @@ finally:
     au.CLAUDE = _c
 # round report: sent once, when nothing is left waiting or past the wait limit (the rest flagged then)
 _st, _f, _h, _ws, _pe, _cur, _mw = au.CR_STATE, au.flag, au.h, au.ws_name, au.pane_exists, au.U["cur"], au.MAX_WAIT
+_hb = au.HERDR
+au.HERDR = sys.executable   # "herdr is installed" (CI has none): the notification goes to the stub below
 try:
     au.CR_STATE = tempfile.mkdtemp(); au.U["cur"] = "/v/2.1.331"
     flagged, sent = [], []
@@ -249,4 +251,5 @@ try:
     assert len(sent) == 1                                            # one report per round
 finally:
     au.CR_STATE, au.flag, au.h, au.ws_name, au.pane_exists, au.U["cur"], au.MAX_WAIT = _st, _f, _h, _ws, _pe, _cur, _mw
+    au.HERDR = _hb
 print("ok")
