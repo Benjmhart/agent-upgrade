@@ -170,13 +170,16 @@ try:
 finally:
     au.CR_STATE = _st
 
-# 2026-11-23: after RESTART-READY, the session's leftover Bash-tool shells (and their children) are stopped
+# 2026-11-23: after RESTART-READY, the session's leftover Bash-tool shells (and their children) are found, to be named
+# back to the agent (never killed)
 kid = subprocess.Popen(["sh", "-c", ": shell-snapshots; sleep 60 & wait"])
 time.sleep(0.3)
 assert str(kid.pid) in au.own_shells(os.getpid()) and len(au.own_shells(os.getpid())) == 2   # the shell and its sleep
-au.stop_shells("%9", os.getpid())
-kid.wait(timeout=10)
-assert not au.own_shells(os.getpid())
+assert "shell-snapshots" in au.holders(os.getpid())
+assert "these shells" in au.LEFT % ("these shells of yours are still running: x", "them")
+kid.kill(); kid.wait()
+os.system(f"pkill -P {kid.pid} 2>/dev/null")
+time.sleep(0.3)
 plain = subprocess.Popen(["sleep", "60"])   # not a Bash-tool shell: left alone
 assert au.own_shells(os.getpid()) == []
 plain.kill(); plain.wait()

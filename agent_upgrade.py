@@ -23,7 +23,7 @@ from datetime import datetime
 
 # Settings saved by `setup`, for schedulers that start this with an environment of their own (herdr's startup entry
 # runs with the herdr server's). The environment wins over the file.
-SETTINGS = ("AGENT_UPGRADE_STATE", "AGENT_UPGRADE_TELL", "HERDR_SOCKET_PATH")
+SETTINGS = ("AGENT_UPGRADE_STATE", "AGENT_UPGRADE_TELL", "AGENT_UPGRADE_MAX_WAIT", "HERDR_SOCKET_PATH")
 CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "agent-upgrade", "env")
 try:
     for k, _, v in (l.partition("=") for l in open(CONF).read().splitlines()):
@@ -227,15 +227,16 @@ RECORDS = os.path.join(CR_STATE, "sessions")   # hooks/record.py: one file per c
 # session's HERDR_PANE_ID, and every scan here reads all of /proc.
 ONLY_CWD = os.environ.get("AGENT_UPGRADE_ONLY_CWD")
 ASK = ("[agent-upgrade] Claude Code %s is installed; this session still runs %s. At your next safe point "
-       "(between loop iterations, if you loop): gracefully finish or stop every background shell, subagent and monitor "
-       "of yours (TaskStop what can't finish soon), stop your loop if you have one (ScheduleWakeup with stop: true; "
-       "CronDelete your recurring cron jobs), then end that reply with one line exactly: RESTART-READY, followed by the "
-       "/loop command that restarts your loop as it was if you had one (e.g. RESTART-READY /loop /next-story:bmad-pony). "
-       "agent-upgrade then disconnects Remote Control, restarts this session on the new version, reconnects it and types "
-       "that /loop line back. If work is running now, carry on and do this when it is done; you will not be asked again.")
-AGAIN = ("[agent-upgrade] /restart was refused: work is still running in the background (it shows in /tasks). Stop every "
-         "subagent, monitor and background shell of yours now (TaskStop each one), then end your reply with the "
-         "RESTART-READY line again, with the same /loop command if you had one.")
+       "(between loop iterations, if you loop): save all your work (commit, or write down anything not yet saved), then "
+       "stop everything you started, as gracefully as you can: let background shells finish or stop them cleanly, "
+       "finish or TaskStop your subagents and monitors, stop any servers or other processes you launched, and stop your "
+       "loop if you have one (ScheduleWakeup with stop: true; CronDelete your recurring cron jobs). Then end that reply "
+       "with one line exactly: RESTART-READY, followed by the /loop command that restarts your loop as it was if you "
+       "had one (e.g. RESTART-READY /loop /next-story:bmad-pony). agent-upgrade then restarts this session on the new "
+       "version (Remote Control and that /loop come back). If work is running now, carry on and do this when it is done.")
+LEFT = ("[agent-upgrade] You said RESTART-READY, but %s. Close %s gracefully (let it finish, or stop it cleanly; "
+        "TaskStop what you started in the background), save anything it was producing, then end your reply with the "
+        "RESTART-READY line again, with the same /loop command if you had one.")
 U = {"dry": False, "cur": "", "accept": "tab", "submit": "enter", "rcwas": False}
 NBSP = " "
 
@@ -571,29 +572,6 @@ def own_shells(pid):
     return out
 
 
-def stop_shells(pane, pid):
-    """After RESTART-READY, shells the session left running are stragglers (mlabs-marketing, 2026-11-23: an `eza` of
-    56 h kept /restart refusing "work is running in the background" every pass). TERM, then KILL after 5 s."""
-    import signal
-    ps = own_shells(pid)
-    if not ps:
-        return
-    what = holders(pid)
-    for sig in (signal.SIGTERM, signal.SIGKILL):
-        for p in ps:
-            try:
-                os.kill(int(p), sig)
-            except OSError:
-                pass
-        for _ in range(10):
-            if not any(alive(p) for p in ps):
-                break
-            time.sleep(0.5)
-        if not any(alive(p) for p in ps):
-            break
-    echo(f"stopped {pane}'s leftover shells after its RESTART-READY: {what}")
-
-
 def shell_fg(pane):
     """The pane's shell owns its terminal (nothing else in the foreground to type into)."""
     for p in pids():
@@ -922,12 +900,13 @@ def restart(pane):
     if not ready and (status(pane) == "working" or why or bg or again or ls.startswith("active")):
         if os.path.exists(st(f"ask-{pid}")):
             age = time.time() - os.path.getmtime(st(f"ask-{pid}"))
-            if age > STUCK_ASK and os.path.exists(st(f"stuck-{pid}")):   # reported once, not every pass
-                echo(f"skip {pane}: still not RESTART-READY ({age / 3600:.1f} h; reported)")
+            if age > MAX_WAIT and os.path.exists(st(f"stuck-{pid}")):   # reported once, not every pass
+                echo(f"skip {pane}: still not RESTART-READY ({age / 60:.0f} min; reported)")
                 return 2
-            if age > STUCK_ASK:   # one waited 1h48m on a `pgrep -f` loop that matched itself
+            if age > MAX_WAIT:   # one waited 1h48m on a `pgrep -f` loop that matched itself
                 touch(f"stuck-{pid}")
-                return cannot(f"asked to wind down {age / 3600:.1f} h ago and still not RESTART-READY; "
+                flag(pane)
+                return cannot(f"asked to wind down {age / 60:.0f} min ago and still not RESTART-READY; "
                               f"held by: {holders(pid) or 'nothing visible (a subagent or monitor?)'}")
             echo(f"skip {pane}: asked to wind down; waiting for its RESTART-READY")
             return 2
@@ -947,19 +926,20 @@ def restart(pane):
         # would cut the turn. 2026-11-23 22:30: this killed the herdr-plugins session's own running command.
         echo(f"skip {pane}: RESTART-READY, but it is working again; restarted when idle")
         return 2
-    had = ready and bool(own_shells(pid))
-    if had:
-        stop_shells(pane, pid)
-    if ready and bg and not had:   # refused for background work after its READY, and no shell of its own left
-        if os.path.exists(st(f"again-{pid}")):
-            return cannot("/restart refused for background work after RESTART-READY twice; a subagent or monitor "
-                          "still runs (no shells left): look at its /tasks")
-        ok, r = say(pane, AGAIN)
+    left = holders(pid) if ready and own_shells(pid) else ""
+    if left or (ready and bg):
+        # Left running after its READY (mlabs-marketing, 2026-11-23: an eza of 56 h), or /restart refused for
+        # background work: named back to the agent to close gracefully. Never killed (Ben, 2026-11-23).
+        what = (f"these shells of yours are still running: {left}", "them") if left else (
+            "Claude refused to restart because work is still running in the background (it shows in /tasks)", "it")
+        ok, r = say(pane, LEFT % what)
         if not ok:
-            echo(f"fail {pane}: could not ask it again ({r})")
-            return 1
-        touch(f"ask-{pid}"); touch(f"again-{pid}"); os.remove(st(f"bg-{pid}"))
-        echo(f"asked {pane} again: /restart was refused for background work after its RESTART-READY")
+            echo(f"skip {pane}: could not ask it to close what it left running ({r})")
+            return 2
+        touch(f"again-{pid}")
+        if bg:
+            os.remove(st(f"bg-{pid}"))
+        echo(f"asked {pane} to close what it left running after its RESTART-READY: {left or 'background work'}")
         return 2
     b = box(pane)
     if b and all(l == "/restart" for l in b):   # left by an early version, which typed one per pass
@@ -1020,7 +1000,18 @@ def restart(pane):
     return 1
 
 
-STUCK_ASK = 3600   # an ask unanswered this long is reported, with what holds it
+# The longest wait for a RESTART-READY before it is reported (once) and the agent flagged for the user. Nothing is
+# ever forced: the session keeps running on its old version until it says it is ready.
+try:
+    MAX_WAIT = 60 * float(os.environ.get("AGENT_UPGRADE_MAX_WAIT") or 60)
+except ValueError:
+    MAX_WAIT = 3600
+
+
+def flag(pane):
+    """Put herdr-queues' revisit flag on the agent, when that plugin is there: the user sees it waiting."""
+    if not tmux(pane) and shutil.which("herdr-queues"):
+        subprocess.run(["herdr-queues", "revisit", pane, "on"], capture_output=True, timeout=15)
 TELL = os.path.expanduser(os.environ.get("AGENT_UPGRADE_TELL", ""))   # an agent that brings back loops after a pass
 
 

@@ -15,8 +15,11 @@ blindly loses work. agent-upgrade restarts them gracefully:
 - A session that runs in Claude's background (agent view, `claude --bg`) gets the same wind-down, then
   `claude respawn` in place of `/restart`. The pane showing it is attached again with `claude attach` on the
   new version. Claude's own daemon moves only idle background sessions to a new version.
-- After `RESTART-READY`, background shells the session left running are stopped (TERM, then KILL). If `/restart`
-  is still refused for background work, the session is asked once more to stop its subagents and monitors.
+- Nothing is ever killed or forced. A busy or looping session is asked to save its work and stop what it started
+  as gracefully as it can. If it says `RESTART-READY` and still has shells running, or `/restart` is refused for
+  background work, it is told what is left and asked to close it gracefully.
+- A session that hasn't said `RESTART-READY` within the wait limit (default 60 min) is reported once and flagged
+  for you (herdr-queues' 🔖 revisit flag, when that plugin is installed). It keeps running on its old version.
 
 It drives the terminal the session runs in: [herdr](https://herdr.dev) or tmux.
 
@@ -55,6 +58,7 @@ are safe to overlap, because only one runs at a time (flock).
 Options, from the environment at setup time (setup saves them in `~/.config/agent-upgrade/env`, which every run
 reads, so herdr's startup entry gets them too; the environment wins):
 - `AGENT_UPGRADE_STATE`: the state folder.
+- `AGENT_UPGRADE_MAX_WAIT`: minutes to wait for a session's `RESTART-READY` before it is reported (default 60).
 - `AGENT_UPGRADE_TELL`: the folder of an agent to tell after a pass that restarted something, for an agent that keeps
   other agents' loops.
 
