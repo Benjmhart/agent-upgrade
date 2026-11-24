@@ -1,6 +1,6 @@
 {
   "name": "agent-upgrade",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Restart running Claude Code sessions onto the installed version, gracefully: waits for idle, winds down loops and background work, works around Remote Control, restores /loop. herdr and tmux.",
   "author": { "name": "Benjmhart" },
   "license": "MIT"

@@ -51,7 +51,7 @@ au() {
 }
 upass() {   # one pass over the folder; its output in $OUT
   local dir=$1
-  OUT=$(AGENT_UPGRADE_ONLY_CWD=$dir AGENT_UPGRADE_FORCE=1 AGENT_UPGRADE_STATE=$D/state/${dir##*/} AGENT_UPGRADE_TELL= \
+  OUT=$(AGENT_UPGRADE_ONLY_CWD=$dir AGENT_UPGRADE_FORCE=${FORCE-1} AGENT_UPGRADE_STATE=$D/state/${dir##*/} AGENT_UPGRADE_TELL= \
         python3 "$ROOT/agent_upgrade.py" once 2>&1)
   sed 's/^/    | /' <<<"$OUT"
 }
@@ -146,7 +146,7 @@ case2() {
   [[ -n $BGID ]] || return 1
   sid=$("$CL" agents --json | python3 -c 'import json, sys; print(next(w["sessionId"] for w in json.load(sys.stdin) if w.get("id") == sys.argv[1]))' "$BGID")
   waitfor 90 "c2: the viewer shows the session, idle" eval '[[ -n $(pid_of "$D/c2" "$P2") ]] && idle "$D/c2" "$P2"' || return 1
-  upass "$D/c2"
+  FORCE= upass "$D/c2"   # no FORCE: a viewer on the current version is foregrounded too (2026-11-24)
   np=$(pid_of "$D/c2" "$P2")
   check "2a background session: interactive in its pane, same session" \
     eval '[[ -n $np ]] && [[ $(kind_of "$D/c2" "$np") == interactive && $(sid_of "$D/c2" "$np") == "$sid" ]]'

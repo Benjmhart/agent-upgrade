@@ -226,14 +226,14 @@ RECORDS = os.path.join(CR_STATE, "sessions")   # hooks/record.py: one file per c
 # Tests only: act on nothing but processes whose cwd is this folder. A sandbox herdr's pane ids (w1:p1) can equal a live
 # session's HERDR_PANE_ID, and every scan here reads all of /proc.
 ONLY_CWD = os.environ.get("AGENT_UPGRADE_ONLY_CWD")
-ASK = ("[agent-upgrade] Claude Code %s is installed; this session still runs %s. At your next safe point "
+ASK = ("[agent-upgrade] %s At your next safe point "
        "(between loop iterations, if you loop): save all your work (commit, or write down anything not yet saved), then "
        "stop everything you started, as gracefully as you can: let background shells finish or stop them cleanly, "
        "finish or TaskStop your subagents and monitors, stop any servers or other processes you launched, and stop your "
        "loop if you have one (ScheduleWakeup with stop: true; CronDelete your recurring cron jobs). Then end that reply "
        "with one line exactly: RESTART-READY, followed by the /loop command that restarts your loop as it was if you "
        "had one (e.g. RESTART-READY /loop /next-story:bmad-pony). agent-upgrade then restarts this session on the new "
-       "version (Remote Control and that /loop come back). If work is running now, carry on and do this when it is done.")
+       "version, as an ordinary session in its pane (Remote Control and that /loop come back). If work is running now, carry on and do this when it is done.")
 LEFT = ("[agent-upgrade] You said RESTART-READY, but %s. Close %s gracefully (let it finish, or stop it cleanly; "
         "TaskStop what you started in the background), save anything it was producing. Check your background tasks "
         "too: a subagent or monitor still listed there (even one only waiting on a shell) counts as running, so finish "
@@ -310,7 +310,7 @@ def keybindings(kb):
     autocomplete:accept, else tab (the slash menu ignores submit until its entry is accepted, 2026-11-08)."""
     blocks = [b for b in (kb.get("bindings") or []) if isinstance(b, dict)] if isinstance(kb, dict) else []
     chat = [b["bindings"] for b in blocks if b.get("context") == "Chat" and isinstance(b.get("bindings"), dict)]
-    submit = next((k for k in ("ctrl+enter", "shift+enter", "alt+enter", "enter")
+    submit = next((k for k in ("alt+enter", "shift+enter", "ctrl+enter", "enter")
                    if next((c[k] for c in chat if c.get(k) is not None), "") == "chat:submit"), "enter")
     accept = next((k for b in blocks if b.get("context") == "Autocomplete"
                    for k, v in (b["bindings"] if isinstance(b.get("bindings"), dict) else {}).items()
@@ -928,7 +928,11 @@ def restart(pane):
         if b:
             echo(f"skip {pane}: the prompt holds a draft: {' '.join(b)[:40]!r}")
             return 2
-        ok, r = say(pane, ASK % (os.path.basename(U["cur"]), os.path.basename(exe(pid))))
+        new, old = os.path.basename(U["cur"]), os.path.basename(exe(pid))
+        ok, r = say(pane, ASK % (f"Claude Code {new} is installed; this session still runs {old}." if new != old else
+                                 "This session runs in Claude's background daemon behind a viewer, where some keys "
+                                 "(ctrl+enter) and /restart do not work; agent-upgrade moves it back to an ordinary "
+                                 "session in this pane."))
         if ok:
             touch(f"ask-{pid}")
             echo(f"asked {pane} to wind down (shells, subagents, loop) at a safe point")
@@ -1180,12 +1184,12 @@ def upgrade(dry):
             W = workers() if W is None else W
             w = W.get(v)
             wx = exe(str(w["pid"])) if w else ""
-            if not w or (x == U["cur"] and wx == U["cur"] and not FORCE):
+            if not w:
                 continue
             if int(p) in mine or int(w["pid"]) in mine:
                 echo(f"skip {pane}: it started this run; it restarts on a later pass")
                 continue
-            stale[pane], BG[pane] = os.path.basename(wx if wx != U["cur"] else x), v
+            stale[pane], BG[pane] = os.path.basename(wx if wx != U["cur"] else x), v   # current too: a viewer breaks keys
             daemon += 1
             continue
         if x == U["cur"] and not (FORCE and pane):

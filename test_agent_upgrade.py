@@ -23,7 +23,7 @@ au.save(mem); assert au.load() == mem
 import json, time
 ben = {"bindings": [{"context": "Chat", "bindings": {"enter": "chat:newline", "alt+enter": "chat:submit", "shift+enter": "chat:submit", "ctrl+enter": "chat:submit"}},
                     {"context": "Autocomplete", "bindings": {"alt+enter": "autocomplete:accept"}}]}
-assert au.keybindings(ben) == ("alt+enter", "ctrl+enter")
+assert au.keybindings(ben) == ("alt+enter", "alt+enter")   # alt+enter: an attach viewer drops ctrl+enter
 assert au.keybindings({}) == ("tab", "enter") and au.keybindings([]) == ("tab", "enter")
 assert au.keybindings({"bindings": [{"context": "Chat", "bindings": {"ctrl+enter": "chat:newline", "shift+enter": "chat:submit"}}]}) == ("tab", "shift+enter")
 # the first Chat block that binds a key decides it: a later block's chat:submit does not count
