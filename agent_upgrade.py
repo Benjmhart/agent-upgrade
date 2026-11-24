@@ -968,6 +968,9 @@ def restart(pane):
     if ready and line:   # its loop comes back after the restart: its RESTART-READY line, else the /loop it was started with
         open(st(f"relaunch-{sid}"), "w").write(line + "\n")
     if pane in BG:
+        if status(pane) == "working":   # a READY, then a new turn: respawn cuts a turn (/restart waits for idle by itself)
+            echo(f"skip {pane}: RESTART-READY, but it is working again; respawned when idle")
+            return 2
         return respawn(pane, BG[pane], sid)
     # Remote Control connected: disconnect it, /restart, and it comes back. One that will not
     # disconnect is reported: /restart refuses under it, and there is no exit fallback.
