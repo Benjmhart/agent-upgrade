@@ -942,6 +942,11 @@ def restart(pane):
             return 2
         echo(f"fail {pane}: could not ask it to wind down ({r})")
         return 1
+    if ready and status(pane) == "working":
+        # A READY, then a new turn (the user wrote to it): its shells are that turn's work, not leftovers, and respawn
+        # would cut the turn. 2026-11-23 22:30: this killed the herdr-plugins session's own running command.
+        echo(f"skip {pane}: RESTART-READY, but it is working again; restarted when idle")
+        return 2
     had = ready and bool(own_shells(pid))
     if had:
         stop_shells(pane, pid)
@@ -968,9 +973,6 @@ def restart(pane):
     if ready and line:   # its loop comes back after the restart: its RESTART-READY line, else the /loop it was started with
         open(st(f"relaunch-{sid}"), "w").write(line + "\n")
     if pane in BG:
-        if status(pane) == "working":   # a READY, then a new turn: respawn cuts a turn (/restart waits for idle by itself)
-            echo(f"skip {pane}: RESTART-READY, but it is working again; respawned when idle")
-            return 2
         return respawn(pane, BG[pane], sid)
     # Remote Control connected: disconnect it, /restart, and it comes back. One that will not
     # disconnect is reported: /restart refuses under it, and there is no exit fallback.
