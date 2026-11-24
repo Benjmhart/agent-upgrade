@@ -235,7 +235,9 @@ ASK = ("[agent-upgrade] Claude Code %s is installed; this session still runs %s.
        "had one (e.g. RESTART-READY /loop /next-story:bmad-pony). agent-upgrade then restarts this session on the new "
        "version (Remote Control and that /loop come back). If work is running now, carry on and do this when it is done.")
 LEFT = ("[agent-upgrade] You said RESTART-READY, but %s. Close %s gracefully (let it finish, or stop it cleanly; "
-        "TaskStop what you started in the background), save anything it was producing, then end your reply with the "
+        "TaskStop what you started in the background), save anything it was producing. Check your background tasks "
+        "too: a subagent or monitor still listed there (even one only waiting on a shell) counts as running, so finish "
+        "or TaskStop it. Then end your reply with the "
         "RESTART-READY line again, with the same /loop command if you had one.")
 U = {"dry": False, "cur": "", "accept": "tab", "submit": "enter", "rcwas": False}
 NBSP = " "
