@@ -126,7 +126,10 @@ case1() {
   sl=$(procs "$D/c1" "sleep 900")
   mark_asked "$D/c1" "$pid"
   upass "$D/c1"
-  check "1a leftover shell: not killed" kill -0 $sl
+  # agent-upgrade must not kill it; the agent itself may close it within seconds of being told (a race to check, not
+  # a fault): alive, or stopped by the agent's own tool call
+  check "1a leftover shell: not killed by agent-upgrade" \
+    eval 'kill -0 $sl 2>/dev/null || in_transcript "$D/c1" "TaskStop" "$sid" || in_transcript "$D/c1" "kill " "$sid"'
   check "1b leftover shell: named back to the agent" \
     waitfor 20 "LEFT message in the transcript" in_transcript "$D/c1" "[agent-upgrade] You said RESTART-READY, but these shells" "$sid"
   waitfor 150 "c1: sleep stopped, RESTART-READY again, idle" \
@@ -150,7 +153,9 @@ case2() {
   waitfor 30 "c2 idle" idle "$D/c2" "$P2"
   typein "$P2" "What is 17+25? Reply with just the number."
   press "$P2" $SUBMIT
-  check "2b background session: $SUBMIT submits" waitfor 60 "a reply of 42" on_screen "$P2" "● 42"
+  # the prompt reaching the session's transcript is the submit (the reply's on-screen form varies)
+  check "2b background session: $SUBMIT submits" \
+    waitfor 60 "the prompt in its transcript" in_transcript "$D/c2" "What is 17+25?" "$sid"
 }
 
 # 3. Draft in box
