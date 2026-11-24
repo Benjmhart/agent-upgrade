@@ -215,4 +215,16 @@ assert list(au.workers()) == ["b842"] and au.workers()["b842"]["pid"] == 7
 au.U["cur"] = "/nonexistent"
 assert au.workers() == {}
 au.U["cur"] = _cur
+
+# 0.4.0: a daemon session resumes in its pane with its options and name, never its first prompt
+_c = au.CLAUDE
+try:
+    au.CLAUDE = tempfile.mkdtemp(); os.makedirs(os.path.join(au.CLAUDE, "daemon"))
+    json.dump({"workers": {"8711": {"dispatch": {"respawnFlags": ["--reply-on-resume", "--permission-mode", "auto",
+               "--model", "opus", "Wait for my next message."], "seed": {"name": "herdr-plugins 🐺"}}}}},
+              open(os.path.join(au.CLAUDE, "daemon", "roster.json"), "w"))
+    assert au.fg_cmd("8711", "s-1") == "claude --resume s-1 --name 'herdr-plugins 🐺' --permission-mode auto --model opus"
+    assert au.fg_cmd("none", "s-2") == "claude --resume s-2"
+finally:
+    au.CLAUDE = _c
 print("ok")

@@ -12,9 +12,11 @@ blindly loses work. agent-upgrade restarts them gracefully:
 - `/restart` restarts the session in place, on the same session, with the same flags. The session's `/loop` is typed
   back.
 - A session that can't be restarted cleanly is reported and left running.
-- A session that runs in Claude's background (agent view, `claude --bg`) gets the same wind-down, then
-  `claude respawn` in place of `/restart`. The pane showing it is attached again with `claude attach` on the
-  new version. Claude's own daemon moves only idle background sessions to a new version.
+- A session that runs in Claude's background (agent view, `claude --bg`) and is shown in a pane gets the same
+  wind-down, then `claude stop` and `claude --resume` in that pane, with its options and name. It then runs in the
+  pane's own terminal on the new version, and takes `/restart` next time. Claude's own daemon moves only idle
+  background sessions to a new version. A `claude attach` viewer passes keys through the daemon's terminal, where
+  ctrl+enter doesn't arrive.
 - Nothing is ever killed or forced. A busy or looping session is asked to save its work and stop what it started
   as gracefully as it can. If it says `RESTART-READY` and still has shells running, or `/restart` is refused for
   background work, it is told what is left and asked to close it gracefully.

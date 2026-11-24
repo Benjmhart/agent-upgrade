@@ -493,70 +493,78 @@ def viewer_pane(wid):
                  and pane_of(p) and viewing(p) == wid), "")
 
 
-def respawn(pane, wid, sid):
-    """A daemon session: `claude respawn` puts it on the installed claude (same session, same Remote Control, its
-    shells kept), then the pane's claude, which drops to agent view ("That session was stopped") and is itself old,
-    is replaced by `claude attach ID`. Tried by hand on personal-comms, 2026-11-23."""
+def fg_cmd(wid, sid):
+    """The command that resumes daemon session wid in a terminal of its own: its launch flags (less the daemon's
+    --reply-on-resume) and its name, from the daemon's roster."""
+    try:
+        d = json.load(open(os.path.join(CLAUDE, "daemon", "roster.json")))["workers"][wid].get("dispatch", {})
+    except (OSError, ValueError, KeyError, TypeError):
+        d = {}
+    f, raw = [], list(d.get("respawnFlags") or d.get("launch", {}).get("flagArgs") or [])
+    while raw:   # options only: a bare word is the session's first prompt (`claude --bg "..."`), sent again on --resume
+        a = raw.pop(0)
+        if a == "--reply-on-resume" or not a.startswith("-"):
+            continue
+        f.append(a)
+        if a in OPT_VALUE and raw and not raw[0].startswith("-"):
+            f.append(raw.pop(0))
+    name = (d.get("seed") or {}).get("name")
+    return shlex.join(["claude", "--resume", sid] + (["--name", name] if name else []) + f)
+
+
+# ponytail: Claude options that take a value, for fg_cmd; one not listed loses its value (a flag, not a prompt, then)
+OPT_VALUE = {"--permission-mode", "--model", "--effort", "--agent", "--add-dir", "--settings", "--mcp-config",
+             "--append-system-prompt", "--system-prompt", "--fallback-model", "--plugin-dir", "--allowedTools",
+             "--disallowedTools", "--name", "-n"}
+
+
+def foreground(pane, wid, sid):
+    """A daemon session: `claude stop`, then `claude --resume` in the pane, so it runs in the pane's own terminal on the
+    installed version. An attach viewer passes keys through the daemon's terminal, where ctrl+enter never arrives
+    (herdr-sandbox 2026-11-23: it submitted after a stop + resume, not through `claude attach`), and an ordinary
+    session takes /restart next time. Remote Control and the /loop come back as after a /restart."""
     old = session_pid(pane)
     rc = bool(bridge(old))
+    cmd = fg_cmd(wid, sid)
     try:
-        r = subprocess.run([U["cur"], "respawn", wid], capture_output=True, text=True, timeout=120)
+        subprocess.run([U["cur"], "stop", wid], capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as e:
-        return fail(pane, f"claude respawn {wid}: {e}")
-    if r.returncode:
-        return fail(pane, f"claude respawn {wid}: {(r.stderr or r.stdout).strip()[:200]}")
-    np = ""
+        return fail(pane, f"claude stop {wid}: {e}")
     for _ in range(30):
-        time.sleep(1)
-        np = str(workers().get(wid, {}).get("pid", ""))
-        if np and np != old and exe(np) == U["cur"]:
+        if not alive(old):
             break
+        time.sleep(1)
     else:
-        return fail(pane, f"claude respawn {wid} ran, but no worker on {os.path.basename(U['cur'])} came up in 30 s")
-    reattach(pane, wid)
-    if rc and not bridge(np):
+        return fail(pane, f"claude stop {wid} ran, but its worker is still running")
+    if not to_shell(pane):
+        open(os.path.join(CR_STATE, f"resume-{sid}"), "w").write(f"{pane}\t{cmd}\n")   # pending() types it later
+        return fail(pane, f"stopped, but its pane did not come back to a shell; the next pass resumes it: {cmd}")
+    if not type_resume(pane, sid, cmd):
+        return 1
+    if rc:
         rc_on(pane)
     return 0
 
 
-def reattach(pane, wid):
-    """Swap the pane's claude for one on the installed version, attached to wid. Only from agent view with an empty
-    box (its "describe a task" placeholder showing): ctrl+c twice exits it (its own footer says so), then
-    `claude attach ID` at the shell."""
-    # A `claude attach` viewer exits to its shell ("Session ... has exited"); one that was the pane's own session
-    # before it went to the background drops to agent view (personal-comms). Both seen 2026-11-23.
+def to_shell(pane):
+    """Bring the pane back to its shell once its session is stopped: a `claude attach` viewer exits by itself ("Session
+    ... has exited"); one that drops to agent view is left by ctrl+c twice (its footer says so), only with its box
+    empty (the "describe a task" placeholder showing). Both seen 2026-11-23."""
     for _ in range(30):
         scr = screen(pane)
-        v = claude_pid(pane)
-        if agent_view(scr) or (not v and shell_fg(pane)):
-            break
-        if v and exe(v) == U["cur"] and viewing(v) == wid:
-            return True   # still attached and current
-        time.sleep(1)
-    else:
-        echo(f"note {pane}: respawned, but its claude neither exited nor dropped to agent view; attach by hand: "
-             f"claude attach {wid}")
-        return False
-    if agent_view(scr):
-        if "❯ describe a task for a new session" not in scr:
-            echo(f"note {pane}: respawned; agent view's box holds a draft, so it was left: claude attach {wid} by hand")
-            return False
-        key(pane, "c-c"); time.sleep(0.4); key(pane, "c-c")
-        for _ in range(20):
-            time.sleep(0.5)
-            if shell_fg(pane):
-                break
-        else:
-            echo(f"note {pane}: respawned, but agent view did not exit to the shell; attach by hand: claude attach {wid}")
-            return False
-    if not (send_text(pane, f"claude attach {wid}") and key(pane, "enter")):
-        return False
-    for _ in range(30):
-        time.sleep(1)
-        v = claude_pid(pane)
-        if v and exe(v) == U["cur"] and viewing(v) == wid:
+        if shell_fg(pane) and not claude_pid(pane):
             return True
-    echo(f"note {pane}: typed 'claude attach {wid}', but no claude {os.path.basename(U['cur'])} on it came up in 30 s")
+        if agent_view(scr):
+            if "❯ describe a task for a new session" not in scr:
+                echo(f"note {pane}: agent view's box holds a draft; left as it is")
+                return False
+            key(pane, "c-c"); time.sleep(0.4); key(pane, "c-c")
+            for _ in range(20):
+                time.sleep(0.5)
+                if shell_fg(pane) and not claude_pid(pane):
+                    return True
+            return False
+        time.sleep(1)
     return False
 
 
@@ -955,7 +963,7 @@ def restart(pane):
     if ready and line:   # its loop comes back after the restart: its RESTART-READY line, else the /loop it was started with
         open(st(f"relaunch-{sid}"), "w").write(line + "\n")
     if pane in BG:
-        return respawn(pane, BG[pane], sid)
+        return foreground(pane, BG[pane], sid)
     # Remote Control connected: disconnect it, /restart, and it comes back. One that will not
     # disconnect is reported: /restart refuses under it, and there is no exit fallback.
     if pid and bridge(pid):
@@ -1211,7 +1219,7 @@ def upgrade(dry):
                 continue
             r = rc_restart(pane)
             if r == 0:
-                echo(f"{'respawned' if pane in BG else 'restarted'} {pane} (was {ver})")
+                echo(f"{'resumed in its pane' if pane in BG else 'restarted'} {pane} (was {ver})")
                 done += 1
             elif r == 1:
                 failed += 1
