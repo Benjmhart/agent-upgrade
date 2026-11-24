@@ -1,5 +1,5 @@
 # python3 test_agent_upgrade.py: the logic without herdr (memory, lost, resume commands, flag cleaning)
-import os, subprocess, sys, tempfile
+import json, os, subprocess, sys, tempfile, time
 os.environ["HERDR_PLUGIN_STATE_DIR"] = tempfile.mkdtemp()
 import agent_upgrade as au
 
@@ -66,6 +66,13 @@ cron = j("assistant", {"type": "tool_use", "name": "CronCreate", "input": {}})
 assert ls([cron]) == "active"
 assert ls([cron, j("assistant", {"type": "tool_use", "name": "CronDelete", "input": {"id": "x"}})]) == "none"
 assert ls([j("assistant", text("done.\nRESTART-READY"))]) == "ready"
+# 2026-11-23: asked again after its READY (refused for background work): wait for a new READY; a first ask keeps a loop
+ready = j("assistant", text("RESTART-READY /loop /x"))
+again = json.dumps({"message": {"role": "user", "content": "[agent-upgrade] /restart was refused: ..."}})
+assert ls([ready, again]) == "none"
+assert ls([ready, again, j("assistant", text("RESTART-READY /loop /x"))]) == "ready /loop /x"
+assert ls([j("assistant", wake(prompt="/loop a")), again]) == "active /loop a"
+assert ls([ready, json.dumps({"message": {"role": "user", "content": "thanks"}})]) == "ready /loop /x"
 
 assert au.shell_why("   30 /bin/zsh -c source shell-snapshots/x\n  400 /bin/zsh -c source shell-snapshots/y\n") == "a shell running 6 min"
 assert au.shell_why("  400 node mcp-server\n   99 zsh shell-snapshots/a\n") == ""
@@ -162,4 +169,31 @@ try:
     au.claude_pid = _cp
 finally:
     au.CR_STATE = _st
+
+# 2026-11-23: after RESTART-READY, the session's leftover Bash-tool shells (and their children) are stopped
+kid = subprocess.Popen(["sh", "-c", ": shell-snapshots; sleep 60 & wait"])
+time.sleep(0.3)
+assert str(kid.pid) in au.own_shells(os.getpid()) and len(au.own_shells(os.getpid())) == 2   # the shell and its sleep
+au.stop_shells("%9", os.getpid())
+kid.wait(timeout=10)
+assert not au.own_shells(os.getpid())
+plain = subprocess.Popen(["sleep", "60"])   # not a Bash-tool shell: left alone
+assert au.own_shells(os.getpid()) == []
+plain.kill(); plain.wait()
+
+# 2026-11-23: a pane that shows a daemon background session (agent view's attach) is recognised
+_c = au.CLAUDE
+try:
+    au.CLAUDE = tempfile.mkdtemp()
+    os.makedirs(os.path.join(au.CLAUDE, "daemon", "attach-journal"))
+    start = open(f"/proc/{os.getpid()}/stat").read().rsplit(") ", 1)[1].split()[19]
+    json.dump({"workers": {"8711": {"cwd": os.getcwd()}, "b842": {"cwd": "/elsewhere"}}},
+              open(os.path.join(au.CLAUDE, "daemon", "roster.json"), "w"))
+    assert au.viewing(os.getpid()) == ""
+    json.dump({"pid": os.getpid(), "procStart": start}, open(os.path.join(au.CLAUDE, "daemon", "attach-journal", "g.json"), "w"))
+    assert au.viewing(os.getpid()) == "8711"
+    json.dump({"pid": os.getpid(), "procStart": "1"}, open(os.path.join(au.CLAUDE, "daemon", "attach-journal", "g.json"), "w"))
+    assert au.viewing(os.getpid()) == ""                 # a reused pid is not the one that attached
+finally:
+    au.CLAUDE = _c
 print("ok")

@@ -233,6 +233,9 @@ ASK = ("[agent-upgrade] Claude Code %s is installed; this session still runs %s.
        "/loop command that restarts your loop as it was if you had one (e.g. RESTART-READY /loop /next-story:bmad-pony). "
        "agent-upgrade then disconnects Remote Control, restarts this session on the new version, reconnects it and types "
        "that /loop line back. If work is running now, carry on and do this when it is done; you will not be asked again.")
+AGAIN = ("[agent-upgrade] /restart was refused: work is still running in the background (it shows in /tasks). Stop every "
+         "subagent, monitor and background shell of yours now (TaskStop each one), then end your reply with the "
+         "RESTART-READY line again, with the same /loop command if you had one.")
 U = {"dry": False, "cur": "", "accept": "tab", "submit": "enter", "rcwas": False}
 NBSP = " "
 
@@ -426,8 +429,74 @@ def touch(name):
     open(os.path.join(CR_STATE, name), "w").close()
 
 
+def ppid(pid):
+    try:
+        return open(f"/proc/{pid}/stat").read().rsplit(") ", 1)[1].split()[1]
+    except (OSError, IndexError):
+        return ""
+
+
 def claude_pid(pane):
-    return next((p for p in pids() if pane_of(p) == pane and exe(p).startswith(VDIR + "/")), "")
+    """The pane's own session: a claude whose parent is a shell. Claude's daemon and its background workers carry the
+    pane id of whichever pane started the daemon (personal-comms, 2026-11-23), so the pane id alone is not enough."""
+    return next((p for p in pids() if pane_of(p) == pane and exe(p).startswith(VDIR + "/") and comm(ppid(p)) in SHELLS), "")
+
+
+def viewing(pid):
+    """The short id of the daemon background session this pane's claude shows (agent view's attach), or "". /restart
+    isn't offered there: the session runs in Claude's daemon, which upgrades its own workers (2026-11-23)."""
+    d = os.path.join(CLAUDE, "daemon")
+    try:
+        start = open(f"/proc/{pid}/stat").read().rsplit(") ", 1)[1].split()[19]
+        workers = json.load(open(os.path.join(d, "roster.json"))).get("workers", {})
+    except (OSError, IndexError, ValueError):
+        return ""
+    # ponytail: the attach journal says this pid attached once; a later detach back to its own session isn't seen
+    for f in glob.glob(os.path.join(d, "attach-journal", "*.json")):
+        try:
+            j = json.load(open(f))
+        except (OSError, ValueError):
+            continue
+        if str(j.get("pid")) == str(pid) and str(j.get("procStart")) == start and workers:
+            return next((k for k, w in workers.items() if w.get("cwd") == cwd(pid)), next(iter(workers)))
+    return ""
+
+
+def own_shells(pid):
+    """The session's Bash-tool shells (children of the claude, shell-snapshots in their args) with every descendant."""
+    kids = {}
+    for p in pids():
+        kids.setdefault(ppid(p), []).append(p)
+    roots = [p for p in kids.get(str(pid), []) if "shell-snapshots" in " ".join(argv(p))]
+    out, todo = [], list(roots)
+    while todo:
+        p = todo.pop()
+        out.append(p)
+        todo += kids.get(p, [])
+    return out
+
+
+def stop_shells(pane, pid):
+    """After RESTART-READY, shells the session left running are stragglers (mlabs-marketing, 2026-11-23: an `eza` of
+    56 h kept /restart refusing "work is running in the background" every pass). TERM, then KILL after 5 s."""
+    import signal
+    ps = own_shells(pid)
+    if not ps:
+        return
+    what = holders(pid)
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for p in ps:
+            try:
+                os.kill(int(p), sig)
+            except OSError:
+                pass
+        for _ in range(10):
+            if not any(alive(p) for p in ps):
+                break
+            time.sleep(0.5)
+        if not any(alive(p) for p in ps):
+            break
+    echo(f"stopped {pane}'s leftover shells after its RESTART-READY: {what}")
 
 
 def shell_fg(pane):
@@ -483,8 +552,13 @@ def loop_state_lines(lines):
             continue
         m = d.get("message") or {} if isinstance(d, dict) else {}
         c = m.get("content") if isinstance(m, dict) else None
+        if isinstance(c, str):
+            c = [{"type": "text", "text": c}]
         if not isinstance(c, list):
             continue
+        if state == "ready" and m.get("role") == "user" and any(
+                isinstance(b, dict) and (b.get("text") or "").startswith("[agent-upgrade]") for b in c):
+            state, line = "none", ""   # asked again after its READY: wait for a new one
         for b in c:
             if not isinstance(b, dict):
                 continue
@@ -747,7 +821,8 @@ def restart(pane):
     # READY counts only after this pid was asked: an old one in the transcript is not an answer).
     ready = ls.startswith("ready") and pid and os.path.exists(st(f"ask-{pid}"))
     bg = pid and os.path.exists(st(f"bg-{pid}"))
-    if not ready and (status(pane) == "working" or why or bg or ls.startswith("active")):
+    again = pid and os.path.exists(st(f"again-{pid}"))   # asked a second time: no /restart before its new READY
+    if not ready and (status(pane) == "working" or why or bg or again or ls.startswith("active")):
         if os.path.exists(st(f"ask-{pid}")):
             age = time.time() - os.path.getmtime(st(f"ask-{pid}"))
             if age > STUCK_ASK:   # one waited 1h48m on a `pgrep -f` loop that matched itself
@@ -766,6 +841,20 @@ def restart(pane):
             return 2
         echo(f"fail {pane}: could not ask it to wind down ({r})")
         return 1
+    had = ready and bool(own_shells(pid))
+    if had:
+        stop_shells(pane, pid)
+    if ready and bg and not had:   # refused for background work after its READY, and no shell of its own left
+        if os.path.exists(st(f"again-{pid}")):
+            return cannot("/restart refused for background work after RESTART-READY twice; a subagent or monitor "
+                          "still runs (no shells left): look at its /tasks")
+        ok, r = say(pane, AGAIN)
+        if not ok:
+            echo(f"fail {pane}: could not ask it again ({r})")
+            return 1
+        touch(f"ask-{pid}"); touch(f"again-{pid}"); os.remove(st(f"bg-{pid}"))
+        echo(f"asked {pane} again: /restart was refused for background work after its RESTART-READY")
+        return 2
     b = box(pane)
     if b and all(l == "/restart" for l in b):   # left by an early version, which typed one per pass
         key(pane, "c-c")
@@ -965,7 +1054,7 @@ def upgrade(dry):
             echo("another upgrade pass is running: skipped")
             return 0
     mine = ancestors()
-    stale, outside = {}, 0   # pane -> version
+    stale, outside, daemon = {}, 0, 0   # pane -> version
     for p in pids():
         x = exe(p)
         if not x.startswith(VDIR + "/") or x == U["cur"]:
@@ -977,7 +1066,11 @@ def upgrade(dry):
         if comm(pp) not in SHELLS:   # the daemon's background sessions (parent: a bg-pty-host) are left alone
             continue
         pane = pane_of(p)
-        if pane and int(p) in mine:   # the session that started this run (/claude-upgrade): restarting it cuts its turn
+        v = viewing(p) if pane else ""
+        if v:
+            echo(f"skip {pane}: it shows Claude's background session {v} (agent view); Claude's daemon upgrades those")
+            daemon += 1
+        elif pane and int(p) in mine:   # the session that started this run (/claude-upgrade): restarting it cuts its turn
             echo(f"skip {pane}: it started this run; it restarts on a later pass")
         elif pane:
             stale[pane] = os.path.basename(x)
@@ -988,9 +1081,12 @@ def upgrade(dry):
         U["accept"], U["submit"] = keybindings(json.load(open(f"{CLAUDE}/keybindings.json")))
     except (OSError, ValueError):
         U["accept"], U["submit"] = "tab", "enter"
+    new = os.path.getmtime(U["cur"])
     for f in os.listdir(CR_STATE):
-        if f.split("-")[0] in ("rc", "bg", "nr", "ask") and not alive(f.rsplit("-", 1)[-1]):
-            os.remove(os.path.join(CR_STATE, f))
+        kind, fp = f.split("-")[0], os.path.join(CR_STATE, f)
+        if kind in ("rc", "bg", "nr", "ask", "again") and (not alive(f.rsplit("-", 1)[-1])
+                                                            or kind != "rc" and os.path.getmtime(fp) < new):
+            os.remove(fp)
     have = bool(shutil.which(HERDR) or shutil.which("tmux"))
     done = busy = failed = 0
     if stale and have:
@@ -1022,7 +1118,7 @@ def upgrade(dry):
         if not dry:
             loops_due()
     echo(f"claude {os.path.basename(U['cur'])}: {done} {'to restart' if dry else 'restarted'}, "
-         f"{busy} busy (next pass), {failed} failed, {outside} outside herdr and tmux")
+         f"{busy} busy (next pass), {failed} failed, {daemon} showing a background session, {outside} outside herdr and tmux")
     return 1 if failed else 0
 
 UNIT = "agent-upgrade"
