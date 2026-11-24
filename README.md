@@ -81,6 +81,24 @@ description = "lost agents"
 `python3 $S lost` prints them (exit 1 when there are any). Resume forms: `claude --resume ID`, `pi --session ID`,
 `codex resume ID`.
 
+## Regression
+
+Every release passes `tests/regression.sh` first. It starts four throwaway Claude sessions (Haiku, one-line prompts)
+in a throwaway herdr (`herdr-sandbox`, which can't reach a live herdr server), each in its own folder under
+`~/.cache/au-regress` (`AU_REGRESS_DIR`), and runs this checkout's pass on each with `AGENT_UPGRADE_ONLY_CWD` and
+`AGENT_UPGRADE_FORCE`:
+
+1. a `RESTART-READY` with a background shell left running: the shell is not killed, it is named back to the agent,
+   and once the agent closes it and says `RESTART-READY` again, the next pass restarts it;
+2. a `claude --bg` session shown with `claude attach`: it comes back in the pane as an interactive session on the
+   same session id, and ctrl+enter submits there;
+3. an idle session with a draft in its box: skipped, the draft untouched;
+4. a `RESTART-READY`, then a new turn running a command: skipped ("working again"), the command still running.
+
+It prints PASS/FAIL per check and exits 1 on any FAIL, in a minute or two. On the first run Claude asks to trust the
+folder; the script accepts. It needs herdr, `herdr-sandbox`, Claude Code's native install and a ctrl+enter submit
+binding.
+
 ## Limits
 
 - **Linux.** The pass reads `/proc`. The launchd setup is there, but the pass does nothing useful on macOS yet.
