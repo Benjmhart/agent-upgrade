@@ -12,6 +12,11 @@ blindly loses work. agent-upgrade restarts them gracefully:
 - `/restart` restarts the session in place, on the same session, with the same flags. The session's `/loop` is typed
   back.
 - A session that can't be restarted cleanly is reported and left running.
+- A session that runs in Claude's background (agent view, `claude --bg`) gets the same wind-down, then
+  `claude respawn` in place of `/restart`. The pane showing it is attached again with `claude attach` on the
+  new version. Claude's own daemon moves only idle background sessions to a new version.
+- After `RESTART-READY`, background shells the session left running are stopped (TERM, then KILL). If `/restart`
+  is still refused for background work, the session is asked once more to stop its subagents and monitors.
 
 It drives the terminal the session runs in: [herdr](https://herdr.dev) or tmux.
 

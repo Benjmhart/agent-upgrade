@@ -445,6 +445,9 @@ def claude_pid(pane):
 def viewing(pid):
     """The short id of the daemon background session this pane's claude shows (agent view's attach), or "". /restart
     isn't offered there: the session runs in Claude's daemon, which upgrades its own workers (2026-11-23)."""
+    a = argv(pid)
+    if "attach" in a[1:-1]:
+        return a[a.index("attach") + 1][:8]
     d = os.path.join(CLAUDE, "daemon")
     try:
         start = open(f"/proc/{pid}/stat").read().rsplit(") ", 1)[1].split()[19]
@@ -460,6 +463,98 @@ def viewing(pid):
         if str(j.get("pid")) == str(pid) and str(j.get("procStart")) == start and workers:
             return next((k for k, w in workers.items() if w.get("cwd") == cwd(pid)), next(iter(workers)))
     return ""
+
+
+BG = {}   # pane -> the daemon session it shows, for this pass
+FORCE = ONLY_CWD and os.environ.get("AGENT_UPGRADE_FORCE")   # tests only: treat ONLY_CWD's sessions as outdated
+
+
+def workers():
+    """Claude's daemon background sessions, {short id: {"pid", "sessionId", ...}}, from `claude agents --json`."""
+    try:
+        r = subprocess.run([U["cur"] or "claude", "agents", "--json"], capture_output=True, text=True, timeout=30)
+        return {w["id"]: w for w in json.loads(r.stdout) if w.get("kind") == "background" and w.get("id") and w.get("pid")}
+    except (OSError, ValueError, subprocess.SubprocessError, TypeError, KeyError):
+        return {}
+
+
+def session_pid(pane):
+    """The claude that runs the pane's session: its daemon worker when the pane shows one, else the pane's claude."""
+    w = workers().get(BG[pane]) if pane in BG else None
+    return str(w["pid"]) if w else claude_pid(pane)
+
+
+def viewer_pane(wid):
+    """The pane whose claude shows daemon session wid, or ""."""
+    return next((pane_of(p) for p in pids() if exe(p).startswith(VDIR + "/") and comm(ppid(p)) in SHELLS
+                 and pane_of(p) and viewing(p) == wid), "")
+
+
+def respawn(pane, wid, sid):
+    """A daemon session: `claude respawn` puts it on the installed claude (same session, same Remote Control, its
+    shells kept), then the pane's claude, which drops to agent view ("That session was stopped") and is itself old,
+    is replaced by `claude attach ID`. Tried by hand on personal-comms, 2026-11-23."""
+    old = session_pid(pane)
+    rc = bool(bridge(old))
+    try:
+        r = subprocess.run([U["cur"], "respawn", wid], capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as e:
+        return fail(pane, f"claude respawn {wid}: {e}")
+    if r.returncode:
+        return fail(pane, f"claude respawn {wid}: {(r.stderr or r.stdout).strip()[:200]}")
+    np = ""
+    for _ in range(30):
+        time.sleep(1)
+        np = str(workers().get(wid, {}).get("pid", ""))
+        if np and np != old and exe(np) == U["cur"]:
+            break
+    else:
+        return fail(pane, f"claude respawn {wid} ran, but no worker on {os.path.basename(U['cur'])} came up in 30 s")
+    reattach(pane, wid)
+    if rc and not bridge(np):
+        rc_on(pane)
+    return 0
+
+
+def reattach(pane, wid):
+    """Swap the pane's claude for one on the installed version, attached to wid. Only from agent view with an empty
+    box (its "describe a task" placeholder showing): ctrl+c twice exits it (its own footer says so), then
+    `claude attach ID` at the shell."""
+    # A `claude attach` viewer exits to its shell ("Session ... has exited"); one that was the pane's own session
+    # before it went to the background drops to agent view (personal-comms). Both seen 2026-11-23.
+    for _ in range(30):
+        scr = screen(pane)
+        v = claude_pid(pane)
+        if agent_view(scr) or (not v and shell_fg(pane)):
+            break
+        if v and exe(v) == U["cur"] and viewing(v) == wid:
+            return True   # still attached and current
+        time.sleep(1)
+    else:
+        echo(f"note {pane}: respawned, but its claude neither exited nor dropped to agent view; attach by hand: "
+             f"claude attach {wid}")
+        return False
+    if agent_view(scr):
+        if "❯ describe a task for a new session" not in scr:
+            echo(f"note {pane}: respawned; agent view's box holds a draft, so it was left: claude attach {wid} by hand")
+            return False
+        key(pane, "c-c"); time.sleep(0.4); key(pane, "c-c")
+        for _ in range(20):
+            time.sleep(0.5)
+            if shell_fg(pane):
+                break
+        else:
+            echo(f"note {pane}: respawned, but agent view did not exit to the shell; attach by hand: claude attach {wid}")
+            return False
+    if not (send_text(pane, f"claude attach {wid}") and key(pane, "enter")):
+        return False
+    for _ in range(30):
+        time.sleep(1)
+        v = claude_pid(pane)
+        if v and exe(v) == U["cur"] and viewing(v) == wid:
+            return True
+    echo(f"note {pane}: typed 'claude attach {wid}', but no claude {os.path.basename(U['cur'])} on it came up in 30 s")
+    return False
 
 
 def own_shells(pid):
@@ -524,7 +619,7 @@ def record(pid):
 
 def status(pane):
     """idle / working from the session's own hooks; herdr's status (it reads the screen) for a session without them."""
-    p = claude_pid(pane)
+    p = session_pid(pane)   # a daemon session's hooks run in its worker
     r = record(p) if p else {}
     if r.get("state") in ("idle", "working"):
         return r["state"]
@@ -707,7 +802,7 @@ def relaunch(only=None):
                 np = i
         if not np:
             continue
-        pane = pane_of(np)
+        pane = viewer_pane(sid[:8]) if sess(np, "kind") == "bg" else pane_of(np)
         if not pane or (only and only != pane):
             continue
         for _ in range(20):
@@ -775,7 +870,7 @@ def rc_on(pane):
     np = ""
     for _ in range(20):
         time.sleep(1)
-        np = claude_pid(pane)
+        np = session_pid(pane)
         if np and bridge(np):
             return True
     if rc_slash(pane):
@@ -812,7 +907,7 @@ def restart(pane):
     if agent_view(screen(pane)):
         echo(f"skip {pane}: it shows Claude's agent view (no /restart there); nothing typed: open the session there")
         return 2
-    pid = claude_pid(pane)
+    pid = session_pid(pane)
     sid = sess(pid, "sessionId") if pid else ""
     ls = loop_state(sid) if sid else "none"
     why = heavy(pid, sid) if pid and sid else ""
@@ -820,12 +915,18 @@ def restart(pane):
     # /restart for background work, or loops is asked once to wind down at a safe point and say RESTART-READY (a
     # READY counts only after this pid was asked: an old one in the transcript is not an answer).
     ready = ls.startswith("ready") and pid and os.path.exists(st(f"ask-{pid}"))
-    bg = pid and os.path.exists(st(f"bg-{pid}"))
+    # "refused for background work" holds a session for an hour, not for its whole life (checked by existence, it held
+    # carbon's trstn-meta for 3 days with an old ask beside it: station-maintenance, arch-bootstrap f26693f)
+    bg = pid and os.path.exists(st(f"bg-{pid}")) and time.time() - os.path.getmtime(st(f"bg-{pid}")) < 3600
     again = pid and os.path.exists(st(f"again-{pid}"))   # asked a second time: no /restart before its new READY
     if not ready and (status(pane) == "working" or why or bg or again or ls.startswith("active")):
         if os.path.exists(st(f"ask-{pid}")):
             age = time.time() - os.path.getmtime(st(f"ask-{pid}"))
+            if age > STUCK_ASK and os.path.exists(st(f"stuck-{pid}")):   # reported once, not every pass
+                echo(f"skip {pane}: still not RESTART-READY ({age / 3600:.1f} h; reported)")
+                return 2
             if age > STUCK_ASK:   # one waited 1h48m on a `pgrep -f` loop that matched itself
+                touch(f"stuck-{pid}")
                 return cannot(f"asked to wind down {age / 3600:.1f} h ago and still not RESTART-READY; "
                               f"held by: {holders(pid) or 'nothing visible (a subagent or monitor?)'}")
             echo(f"skip {pane}: asked to wind down; waiting for its RESTART-READY")
@@ -866,6 +967,8 @@ def restart(pane):
     line = ls.removeprefix("ready ") if ls != "ready" else (record(pid).get("loop") or "" if pid else "")
     if ready and line:   # its loop comes back after the restart: its RESTART-READY line, else the /loop it was started with
         open(st(f"relaunch-{sid}"), "w").write(line + "\n")
+    if pane in BG:
+        return respawn(pane, BG[pane], sid)
     # Remote Control connected: disconnect it, /restart, and it comes back. One that will not
     # disconnect is reported: /restart refuses under it, and there is no exit fallback.
     if pid and bridge(pid):
@@ -1055,22 +1158,29 @@ def upgrade(dry):
             return 0
     mine = ancestors()
     stale, outside, daemon = {}, 0, 0   # pane -> version
+    W = None
+    BG.clear()
     for p in pids():
         x = exe(p)
-        if not x.startswith(VDIR + "/") or x == U["cur"]:
-            continue
-        try:
-            pp = open(f"/proc/{p}/stat").read().rsplit(") ", 1)[1].split()[1]
-        except (OSError, IndexError):
-            continue
-        if comm(pp) not in SHELLS:   # the daemon's background sessions (parent: a bg-pty-host) are left alone
+        if not x.startswith(VDIR + "/") or comm(ppid(p)) not in SHELLS:   # workers (parent: a bg-pty-host) via their pane
             continue
         pane = pane_of(p)
         v = viewing(p) if pane else ""
         if v:
-            echo(f"skip {pane}: it shows Claude's background session {v} (agent view); Claude's daemon upgrades those")
+            W = workers() if W is None else W
+            w = W.get(v)
+            wx = exe(str(w["pid"])) if w else ""
+            if not w or (x == U["cur"] and wx == U["cur"] and not FORCE):
+                continue
+            if int(p) in mine or int(w["pid"]) in mine:
+                echo(f"skip {pane}: it started this run; it restarts on a later pass")
+                continue
+            stale[pane], BG[pane] = os.path.basename(wx if wx != U["cur"] else x), v
             daemon += 1
-        elif pane and int(p) in mine:   # the session that started this run (/claude-upgrade): restarting it cuts its turn
+            continue
+        if x == U["cur"] and not (FORCE and pane):
+            continue
+        if pane and int(p) in mine:   # the session that started this run (/claude-upgrade): restarting it cuts its turn
             echo(f"skip {pane}: it started this run; it restarts on a later pass")
         elif pane:
             stale[pane] = os.path.basename(x)
@@ -1084,7 +1194,7 @@ def upgrade(dry):
     new = os.path.getmtime(U["cur"])
     for f in os.listdir(CR_STATE):
         kind, fp = f.split("-")[0], os.path.join(CR_STATE, f)
-        if kind in ("rc", "bg", "nr", "ask", "again") and (not alive(f.rsplit("-", 1)[-1])
+        if kind in ("rc", "bg", "nr", "ask", "again", "stuck") and (not alive(f.rsplit("-", 1)[-1])
                                                             or kind != "rc" and os.path.getmtime(fp) < new):
             os.remove(fp)
     have = bool(shutil.which(HERDR) or shutil.which("tmux"))
@@ -1096,14 +1206,14 @@ def upgrade(dry):
                 busy += 1
                 continue
             if dry:
-                p = claude_pid(pane)
+                p = session_pid(pane)
                 i = sess(p, "sessionId") if p else ""
                 echo(f"would restart {pane} ({ver}, {s}, loop: {loop_state(i)}, in flight: {heavy(p, i) if p else ''})")
                 done += 1
                 continue
             r = rc_restart(pane)
             if r == 0:
-                echo(f"restarted {pane} (was {ver})")
+                echo(f"{'respawned' if pane in BG else 'restarted'} {pane} (was {ver})")
                 done += 1
             elif r == 1:
                 failed += 1
@@ -1118,7 +1228,7 @@ def upgrade(dry):
         if not dry:
             loops_due()
     echo(f"claude {os.path.basename(U['cur'])}: {done} {'to restart' if dry else 'restarted'}, "
-         f"{busy} busy (next pass), {failed} failed, {daemon} showing a background session, {outside} outside herdr and tmux")
+         f"{busy} busy (next pass), {failed} failed, {daemon} of them background sessions, {outside} outside herdr and tmux")
     return 1 if failed else 0
 
 UNIT = "agent-upgrade"

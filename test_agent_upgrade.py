@@ -196,4 +196,20 @@ try:
     assert au.viewing(os.getpid()) == ""                 # a reused pid is not the one that attached
 finally:
     au.CLAUDE = _c
+
+# 0.2.0: `claude attach ID` names its session; workers() reads `claude agents --json` (background sessions only)
+_argv = au.argv
+au.argv = lambda pid: ["claude", "--name", "x", "attach", "b84282cd"]
+assert au.viewing(os.getpid()) == "b84282cd"
+au.argv = _argv
+fake = os.path.join(tempfile.mkdtemp(), "claude")
+open(fake, "w").write("#!/bin/sh\necho '[{\"id\": \"b842\", \"pid\": 7, \"kind\": \"background\"}, "
+                      "{\"pid\": 8, \"kind\": \"interactive\"}]'\n")
+os.chmod(fake, 0o755)
+_cur = au.U["cur"]
+au.U["cur"] = fake
+assert list(au.workers()) == ["b842"] and au.workers()["b842"]["pid"] == 7
+au.U["cur"] = "/nonexistent"
+assert au.workers() == {}
+au.U["cur"] = _cur
 print("ok")
