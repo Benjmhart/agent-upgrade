@@ -252,4 +252,11 @@ try:
 finally:
     au.CR_STATE, au.flag, au.h, au.ws_name, au.pane_exists, au.U["cur"], au.MAX_WAIT = _st, _f, _h, _ws, _pe, _cur, _mw
     au.HERDR = _hb
+# a loop's passes read the settings file afresh: one taken from it is not passed on (TELL removed, 2026-11-25)
+_d = tempfile.mkdtemp(); os.makedirs(os.path.join(_d, "agent-upgrade"))
+open(os.path.join(_d, "agent-upgrade", "env"), "w").write("AGENT_UPGRADE_TELL=/x\n")
+_o = subprocess.run([sys.executable, "-c", "import agent_upgrade as a, os; print(sorted(a.FROM_CONF), os.environ['AGENT_UPGRADE_TELL'])"],
+                    capture_output=True, text=True, cwd=os.path.dirname(os.path.abspath(au.__file__)),
+                    env={k: v for k, v in os.environ.items() if not k.startswith("AGENT_UPGRADE")} | {"XDG_CONFIG_HOME": _d}).stdout
+assert _o.strip() == "['AGENT_UPGRADE_TELL'] /x", _o
 print("ok")

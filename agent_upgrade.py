@@ -25,10 +25,12 @@ from datetime import datetime
 # runs with the herdr server's). The environment wins over the file.
 SETTINGS = ("AGENT_UPGRADE_STATE", "AGENT_UPGRADE_TELL", "AGENT_UPGRADE_MAX_WAIT", "HERDR_SOCKET_PATH")
 CONF = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "agent-upgrade", "env")
+FROM_CONF = set()   # settings taken from CONF: a loop's passes drop them and read CONF afresh
 try:
     for k, _, v in (l.partition("=") for l in open(CONF).read().splitlines()):
-        if k in SETTINGS and v:
-            os.environ.setdefault(k, v)
+        if k in SETTINGS and v and k not in os.environ:
+            os.environ[k] = v
+            FROM_CONF.add(k)
 except OSError:
     pass
 
@@ -1139,7 +1141,8 @@ def loop():
     time.sleep(120)   # the server's agents first (the timer waited 2 min after boot too)
     while True:
         open(ALIVE, "w").close()
-        r = subprocess.run([sys.executable, os.path.abspath(__file__), "once"], capture_output=True, text=True)
+        r = subprocess.run([sys.executable, os.path.abspath(__file__), "once"], capture_output=True, text=True,
+                           env={k: v for k, v in os.environ.items() if k not in FROM_CONF})   # a setting removed from CONF ends at the next pass
         out = (r.stdout + r.stderr).strip()
         try:
             old = open(log).read().splitlines()[-400:]

@@ -1,6 +1,6 @@
 id = "benjmhart.agent-upgrade"
 name = "Agent upgrade"
-version = "0.6.0"
+version = "0.6.1"
 min_herdr_version = "0.9.3"
 description = "Restart agent sessions onto the installed version gracefully (a pass every 10 min), and list lost agents: panes whose agent exited and was not resumed"
 platforms = ["linux", "macos", "windows"]
