@@ -141,10 +141,23 @@ def lost(mem=None, panes=None, agents=None):
     agents = herdr("agent", "list")["agents"] if agents is None else agents
     alive = {a.get("terminal_id") for a in agents}
     by_term = {p.get("terminal_id"): p for p in panes}
-    out = [(t, r, by_term[t]["pane_id"]) for t, r in mem.items() if t in by_term and t not in alive]
+    parked = parked_sessions()
+    out = [(t, r, by_term[t]["pane_id"]) for t, r in mem.items()
+           if t in by_term and t not in alive and r.get("session") not in parked]
     for t in [t for t in mem if t not in by_term]:
         del mem[t]
     return out
+
+
+def parked_sessions():
+    """Sessions herdr-queues parked on purpose (its `park on`: ended, resumed from its popup): not lost. Read from its
+    state file when it is installed; empty otherwise."""
+    root = os.environ["LOCALAPPDATA"] if WIN else (os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"))
+    try:
+        with open(os.path.join(root, "herdr", "plugins", "benjmhart.queues", "queues.json")) as f:
+            return {r.get("sid") for r in (json.load(f).get("parked") or {}).values()}
+    except (OSError, ValueError, AttributeError):
+        return set()
 
 
 def workspaces():

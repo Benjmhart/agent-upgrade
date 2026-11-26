@@ -259,4 +259,13 @@ _o = subprocess.run([sys.executable, "-c", "import agent_upgrade as a, os; print
                     capture_output=True, text=True, cwd=os.path.dirname(os.path.abspath(au.__file__)),
                     env={k: v for k, v in os.environ.items() if not k.startswith("AGENT_UPGRADE")} | {"XDG_CONFIG_HOME": _d}).stdout
 assert _o.strip() == "['AGENT_UPGRADE_TELL'] /x", _o
+# a session herdr-queues parked is not "lost" (its pane sits at a shell on purpose)
+_ps = au.parked_sessions
+try:
+    au.parked_sessions = lambda: {"S2"}
+    _mem = {"T1": {"session": "S1"}, "T2": {"session": "S2"}}
+    _rows = au.lost(_mem, [{"terminal_id": "T1", "pane_id": "p1"}, {"terminal_id": "T2", "pane_id": "p2"}], [])
+    assert [r[0] for r in _rows] == ["T1"], _rows
+finally:
+    au.parked_sessions = _ps
 print("ok")
