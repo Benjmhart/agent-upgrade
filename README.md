@@ -117,3 +117,10 @@ binding.
 - **Other agents.** pi, codex and others are on the list, but only lost-agents resume knows them so far.
 
 Standard library only. MIT.
+
+## More tools
+
+- [herdr-queues](https://github.com/Benjmhart/herdr-queues): the sidebar and popup that sort every agent into what needs you now
+- [herdr-inandout](https://github.com/Benjmhart/herdr-inandout): back and forward through the herdr workspaces you visited, like a browser
+- [herdr-machine-icons](https://github.com/Benjmhart/herdr-machine-icons): one icon per pane for the machine it runs on
+- [point-here](https://github.com/Benjmhart/point-here): Claude in Chrome points at what you must click, instead of describing it
